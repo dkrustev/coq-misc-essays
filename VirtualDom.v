@@ -66,6 +66,29 @@ Fixpoint stMapM {S A B} (f: A -> State S B) (xs: list A) : State S (list B) :=
   end.
 *)
 
+Require Import FunctionalExtensionality.
+
+Lemma stBind_assoc: forall S A B C (m: State S A) (f: A -> State S B) (g: B -> State S C),
+  stBind (stBind m f) g = stBind m (fun x => stBind (f x) g).
+Proof.
+  destruct m as [fm]. simpl. intros. f_equal. extensionality s0.
+  destruct (fm s0) as [a s1]. destruct (f a) as [h]. reflexivity.
+Qed.
+
+Lemma stRun_stBind: forall S A B (m: State S A) (f: A -> State S B) s,
+  stRun (stBind m f) s = let p := stRun m s in stRun (f (fst p)) (snd p).
+Proof.
+  destruct m as [g]. simpl. intros. destruct (g s) as [a s1].
+  simpl. destruct (f a) as [h]. reflexivity.
+Qed.
+
+Lemma stEval_stBind: forall S A B (m: State S A) (f: A -> State S B) s,
+  stEval (stBind m f) s = let p := stRun m s in stEval (f (fst p)) (snd p).
+Proof.
+  destruct m as [g]. simpl. intros. unfold stEval. simpl. destruct (g s) as [a s1].
+  simpl. destruct (f a) as [h]. reflexivity.
+Qed.
+
 (* *** *)
 
 Section VDom.
@@ -233,6 +256,15 @@ Theorem updateNode_correct: forall vdom dom parent index,
 Proof.
   induction vdom using VDomNode_fullInd.
   - simpl. intros.
+    rewrite stBind_assoc.
+    rewrite stEval_stBind.
+    destruct (stRun (childrenCount domOps parent) dom) as [chldCnt dom1].
+    simpl.
+    rewrite stEval_stBind. destruct (index <? chldCnt) eqn: Hlt.
+    + admit.
+    + rewrite stRun_stBind.
+      destruct (stRun (createTextNode domOps text)) as [txtNode dom2] eqn: Heq.
+      simpl.
 
 Qed.
 
