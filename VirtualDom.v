@@ -53,6 +53,7 @@ Definition stGet {S} : State S S := MkState (fun s => (s, s)).
 Definition stPut {S} (s: S) : State S unit := MkState (fun _ => (tt, s)).
 Definition stRun {S A} (m: State S A) (s0: S) : A * S :=
   let '(MkState f) := m in f s0.
+Definition stEval {S A} (m: State S A) s0 := fst (stRun m s0).
 
 Notation "m >>= f" := (stBind m f) (at level 50, left associativity).
 Notation "'do' a <- e ; c" := (e >>= (fun a => c)) (at level 60, right associativity).
@@ -91,8 +92,37 @@ Record DomOps := MkDomOps {
 
 Variable domOps: DomOps.
 
+(* *** *)
+
 Inductive VDomNode := 
   VText (t: String.string) | VElement (name: String.string) (children: list VDomNode).
+
+Fixpoint vdomDepth (node: VDomNode) : nat :=
+  match node with
+  | VText _ => 0
+  | VElement _ children => S (fold_right max 0 (map vdomDepth children))
+  end.
+
+Section VDomNodeFullInd.
+
+Variable P: VDomNode -> Prop.
+Variable PText: forall text, P (VText text).
+Variable PElement: forall name children, Forall P children -> P (VElement name children).
+
+Fixpoint VDomNode_fullInd (node: VDomNode) : P node :=
+  match node with
+  | VText text => PText text
+  | VElement name children =>
+      PElement name _ ((fix nodesInd (nodes: list VDomNode) : Forall P nodes :=
+        match nodes return Forall P nodes with
+        | nil => Forall_nil _
+        | node::nodes => Forall_cons node (VDomNode_fullInd node) (nodesInd nodes)
+        end) children)
+  end.
+
+End VDomNodeFullInd.
+
+(* *** *)
 
 Fixpoint createNode (node: VDomNode) : State Dom DomNode :=
   let createNodes := fix createNodes (parent: DomNode) (nodes: list VDomNode) 
@@ -118,7 +148,12 @@ Fixpoint updateNode (parent: DomNode) (newNode: VDomNode) (index: nat) {struct n
   let removeNodes := 
     fix removeNodes (parent: DomNode) (from: nat) (count: nat) 
       {struct count} : State Dom unit :=
-      stRet tt (* TODO *) 
+      match count with
+      | 0 => stRet tt
+      | S count => 
+          do _ <- domOps.(removeChildAt) parent (count + from);
+          removeNodes parent from count
+      end
     in
   let updateNodes := 
     fix updateNodes (parent: DomNode) (newNodes: list VDomNode) (index: nat)
@@ -141,7 +176,7 @@ Fixpoint updateNode (parent: DomNode) (newNode: VDomNode) (index: nat) {struct n
         if String.string_dec name oldName then
           do oldLen <- domOps.(childrenCount) oldNode;
           let newLen := length children in
-          do _ <- if newLen <=? oldLen then removeNodes oldNode newLen (oldLen - newLen) else stRet tt;
+          do _ <- if newLen <? oldLen then removeNodes oldNode newLen (oldLen - newLen) else stRet tt;
           updateNodes oldNode children 0
         else
           do node <- createNode newNode;
@@ -157,6 +192,49 @@ Fixpoint updateNode (parent: DomNode) (newNode: VDomNode) (index: nat) {struct n
   else
     do node <- createNode newNode;
     domOps.(appendChild) parent node.
+
+(* *** *)
+
+Fixpoint dom2vdom (maxDepth: nat) (root: DomNode) {struct maxDepth} : State Dom VDomNode :=
+  do type <- domOps.(getNodeType) root;
+  match type with
+  | TextNode => 
+      do text <- domOps.(getText) root;
+      stRet (VText text)
+  | ElementNode =>
+      do tag <- domOps.(getTagName) root;
+      do children <- match maxDepth with
+        | 0 => stRet nil
+        | S maxDepth => 
+            let convChildren :=
+              fix convChildren index count :=
+                match count with
+                | 0 => stRet nil
+                | S count =>
+                    do childNode <- domOps.(getChildNode) root index;
+                    do vnode <- dom2vdom maxDepth childNode;
+                    do vnodes <- convChildren (S index) count;
+                    stRet (vnode::vnodes)
+                end
+              in
+            do count <- domOps.(childrenCount) root;
+            convChildren 0 count
+        end;
+      stRet (VElement tag children)
+  end.
+
+Theorem updateNode_correct: forall vdom dom parent index,
+  index < stEval (domOps.(childrenCount) parent) dom ->
+  stEval (
+    do _ <- updateNode parent vdom index;
+    do node <- domOps.(getChildNode) parent index;
+    dom2vdom (vdomDepth vdom) node) dom 
+  = vdom.
+Proof.
+  induction vdom using VDomNode_fullInd.
+  - simpl. intros.
+
+Qed.
 
 (*
 Inductive DomNode (heapSize: nat) : Set  := 
