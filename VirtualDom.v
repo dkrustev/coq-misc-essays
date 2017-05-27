@@ -184,37 +184,37 @@ Fixpoint updateNode (parent: DomNode) (newNode: VDomNode) (index: nat) {struct n
       match newNodes with
       | nil => stRet tt
       | newNode::newNodes =>
-          do _ <- updateNode parent newNode index;
+          do len <- domOps.(childrenCount) parent;
+          do _ <- 
+            if index <? len then
+              updateNode parent newNode index
+            else
+              do node <- createNode newNode;
+              domOps.(appendChild) parent node;
           updateNodes parent newNodes (S index)
       end
     in
-  do childCount <- domOps.(childrenCount) parent;
-  if index <? childCount
-  then 
-    do oldNode <- domOps.(getChildNode) parent index;
-    do oldNodeType <- domOps.(getNodeType) oldNode;
-    match newNode, oldNodeType with
-    | VElement name children, ElementNode => 
-        do oldName <- domOps.(getTagName) oldNode;
-        if String.string_dec name oldName then
-          do oldLen <- domOps.(childrenCount) oldNode;
-          let newLen := length children in
-          do _ <- if newLen <? oldLen then removeNodes oldNode newLen (oldLen - newLen) else stRet tt;
-          updateNodes oldNode children 0
-        else
-          do node <- createNode newNode;
-          domOps.(replaceChildAt) parent index node
-    | VText text, TextNode =>
-        do oldText <- domOps.(getText) oldNode;
-        if String.string_dec text oldText then stRet tt
-        else domOps.(setText) oldNode text
-    | _, _ => 
+  do oldNode <- domOps.(getChildNode) parent index;
+  do oldNodeType <- domOps.(getNodeType) oldNode;
+  match newNode, oldNodeType with
+  | VElement name children, ElementNode => 
+      do oldName <- domOps.(getTagName) oldNode;
+      if String.string_dec name oldName then
+        do oldLen <- domOps.(childrenCount) oldNode;
+        let newLen := length children in
+        do _ <- if newLen <? oldLen then removeNodes oldNode newLen (oldLen - newLen) else stRet tt;
+        updateNodes oldNode children 0
+      else
         do node <- createNode newNode;
         domOps.(replaceChildAt) parent index node
-    end
-  else
-    do node <- createNode newNode;
-    domOps.(appendChild) parent node.
+  | VText text, TextNode =>
+      do oldText <- domOps.(getText) oldNode;
+      if String.string_dec text oldText then stRet tt
+      else domOps.(setText) oldNode text
+  | _, _ => 
+      do node <- createNode newNode;
+      domOps.(replaceChildAt) parent index node
+  end.
 
 (* *** *)
 
@@ -258,13 +258,44 @@ Proof.
   - simpl. intros.
     rewrite stBind_assoc.
     rewrite stEval_stBind.
-    destruct (stRun (childrenCount domOps parent) dom) as [chldCnt dom1].
+    destruct (stRun (getChildNode domOps parent index) dom) as [oldNode dom1] eqn: Heq.
     simpl.
-    rewrite stEval_stBind. destruct (index <? chldCnt) eqn: Hlt.
-    + admit.
+    rewrite stEval_stBind.
+    rewrite stRun_stBind.
+    destruct (stRun (getNodeType domOps oldNode) dom1) as [oldType dom2] eqn: Heq1.
+    simpl.
+    destruct oldType.
     + rewrite stRun_stBind.
-      destruct (stRun (createTextNode domOps text)) as [txtNode dom2] eqn: Heq.
+      destruct (stRun (getText domOps oldNode) dom2) as [oldText dom3] eqn: Heq2.
       simpl.
+      destruct (String.string_dec text oldText) as [Heqtxt | Hneq].
+      * subst. simpl. 
+        rewrite stEval_stBind.
+        replace dom1 with dom in * by admit.
+        replace dom2 with dom in * by admit.
+        replace dom3 with dom in * by admit.
+        rewrite Heq. simpl.
+        rewrite stEval_stBind.
+        simpl. rewrite Heq1. simpl.
+        rewrite stEval_stBind.
+        simpl. rewrite Heq2. reflexivity.
+      * destruct (stRun (setText domOps oldNode text) dom3) as [? dom4] eqn: Heq3.
+        simpl.
+        replace dom1 with dom in * by admit.
+        replace dom2 with dom in * by admit.
+        replace dom3 with dom in * by admit.
+        rewrite stEval_stBind.
+        replace (stRun (getChildNode domOps parent index) dom4) with (oldNode, dom4) by admit.
+          (* should follow from [Heq], but not clear how to validate this *)
+        simpl.
+        rewrite stEval_stBind.
+        replace (stRun (getNodeType domOps oldNode) dom4) with (TextNode, dom4) by admit.
+          (* should follow from [Heq1], but not clear how to validate this *)
+        simpl.
+        rewrite stEval_stBind.
+        replace (stRun (getText domOps oldNode) dom4) with (text, dom4) by admit.
+        reflexivity.
+    +
 
 Qed.
 
