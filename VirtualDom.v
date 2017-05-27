@@ -3,7 +3,7 @@
 
 (* partially inspired by: https://medium.com/@deathmood/how-to-write-your-own-virtual-dom-ee74acc13060 *)
 
-Require Import List.
+Require Import List Arith.
 Require String.
 Require Fin.
 
@@ -75,13 +75,18 @@ Variable DomNode: Type.
 Inductive DomNodeType := TextNode | ElementNode.
 
 Record DomOps := MkDomOps {
-  nodeEqDec: forall x y: DomNode, {x = y} + {x <> y};
+  (* nodeEqDec: forall x y: DomNode, {x = y} + {x <> y}; *)
   getNodeType: DomNode -> State Dom DomNodeType;
   childrenCount: DomNode -> State Dom nat;
   getChildNode: DomNode -> nat -> State Dom DomNode;
-  appendChild: DomNode -> DomNode -> State Dom unit;
   createTextNode: String.string -> State Dom DomNode;
   createElement: String.string -> State Dom DomNode;
+  appendChild: DomNode -> DomNode -> State Dom unit;
+  removeChildAt: DomNode -> nat -> State Dom unit;
+  replaceChildAt: DomNode -> nat -> DomNode -> State Dom unit;
+  getTagName: DomNode -> State Dom String.string;
+  getText: DomNode -> State Dom String.string;
+  setText: DomNode -> String.string -> State Dom unit;
   }.
 
 Variable domOps: DomOps.
@@ -107,6 +112,51 @@ Fixpoint createNode (node: VDomNode) : State Dom DomNode :=
     do els <- createNodes el children;
     stRet el
   end.
+
+Fixpoint updateNode (parent: DomNode) (newNode: VDomNode) (index: nat) {struct newNode} 
+  : State Dom unit :=
+  let removeNodes := 
+    fix removeNodes (parent: DomNode) (from: nat) (count: nat) 
+      {struct count} : State Dom unit :=
+      stRet tt (* TODO *) 
+    in
+  let updateNodes := 
+    fix updateNodes (parent: DomNode) (newNodes: list VDomNode) (index: nat)
+      {struct newNodes} : State Dom unit :=
+      match newNodes with
+      | nil => stRet tt
+      | newNode::newNodes =>
+          do _ <- updateNode parent newNode index;
+          updateNodes parent newNodes (S index)
+      end
+    in
+  do childCount <- domOps.(childrenCount) parent;
+  if index <? childCount
+  then 
+    do oldNode <- domOps.(getChildNode) parent index;
+    do oldNodeType <- domOps.(getNodeType) oldNode;
+    match newNode, oldNodeType with
+    | VElement name children, ElementNode => 
+        do oldName <- domOps.(getTagName) oldNode;
+        if String.string_dec name oldName then
+          do oldLen <- domOps.(childrenCount) oldNode;
+          let newLen := length children in
+          do _ <- if newLen <=? oldLen then removeNodes oldNode newLen (oldLen - newLen) else stRet tt;
+          updateNodes oldNode children 0
+        else
+          do node <- createNode newNode;
+          domOps.(replaceChildAt) parent index node
+    | VText text, TextNode =>
+        do oldText <- domOps.(getText) oldNode;
+        if String.string_dec text oldText then stRet tt
+        else domOps.(setText) oldNode text
+    | _, _ => 
+        do node <- createNode newNode;
+        domOps.(replaceChildAt) parent index node
+    end
+  else
+    do node <- createNode newNode;
+    domOps.(appendChild) parent node.
 
 (*
 Inductive DomNode (heapSize: nat) : Set  := 
