@@ -7,6 +7,49 @@ Require Import List Arith.
 Require String.
 Require Fin.
 
+Fixpoint replaceNth {A} (n: nat) (xs: list A) (y: A) {struct xs} : list A :=
+  match xs with
+  | nil => nil
+  | x::xs => match n with
+    | 0 => y::xs
+    | S n => x :: replaceNth n xs y
+    end
+  end.
+
+Lemma length_replaceNth: forall A (xs: list A) n y, length (replaceNth n xs y) = length xs.
+Proof.
+  induction xs; auto.
+  simpl. intros. destruct n; auto. 
+  simpl. f_equal. auto.
+Qed.
+
+Lemma nth_replaceNth_sameInd: forall A (xs: list A) n y default,
+  nth n (replaceNth n xs y) default =  if n <? length xs then y else default.
+Proof.
+  induction xs.
+  - simpl. intros. destruct n; auto.
+  - simpl. intros. destruct n; auto.
+    simpl. rewrite IHxs. unfold Nat.ltb. reflexivity.
+Qed.
+
+Lemma nth_replaceNth_diffInd: forall A (xs: list A) n m y default,
+  n <> m -> nth n (replaceNth m xs y) default = nth n xs default.
+Proof.
+  induction xs; auto.
+  simpl. destruct m.
+  - simpl. intros. destruct n; try congruence.
+  - simpl. intros. destruct n; auto.
+Qed.
+
+Lemma replaceNth_app_l: forall A (xs ys: list A) n y,
+  n < length xs -> replaceNth n (xs ++ ys) y = replaceNth n xs y ++ ys.
+Proof.
+  induction xs.
+  - simpl. intros. contradict H. auto with arith.
+  - simpl. intros. destruct n; auto.
+    rewrite IHxs; auto with arith.
+Qed.
+
 (*
 Fixpoint optionMap {A B: Type} (f: A -> option B) (xs: list A) : option (list B) :=
   match xs with
@@ -93,12 +136,9 @@ Qed.
 
 Section VDom.
 
-Variable Dom: Type.
-Variable DomNode: Type.
-
 Inductive DomNodeType := TextNode | ElementNode.
 
-Record DomOps := MkDomOps {
+Record DomOps (Dom: Type) (DomNode: Type) := MkDomOps {
   (* nodeEqDec: forall x y: DomNode, {x = y} + {x <> y}; *)
   getNodeType: DomNode -> State Dom DomNodeType;
   childrenCount: DomNode -> State Dom nat;
@@ -113,7 +153,99 @@ Record DomOps := MkDomOps {
   setText: DomNode -> String.string -> State Dom unit;
   }.
 
-Variable domOps: DomOps.
+Implicit Arguments getNodeType [Dom DomNode].
+Implicit Arguments childrenCount [Dom DomNode].
+Implicit Arguments getChildNode [Dom DomNode].
+Implicit Arguments createTextNode [Dom DomNode].
+Implicit Arguments createElement [Dom DomNode].
+Implicit Arguments appendChild [Dom DomNode].
+Implicit Arguments removeChildAt [Dom DomNode].
+Implicit Arguments replaceChildAt [Dom DomNode].
+Implicit Arguments getTagName [Dom DomNode].
+Implicit Arguments getText [Dom DomNode].
+Implicit Arguments setText [Dom DomNode].
+
+Definition DomNode := nat.
+
+Inductive DomNodeCell: Set  := 
+  | DomText (t: String.string) 
+  | DomElement (name: String.string) (children: list DomNode).
+
+Definition Dom := list DomNodeCell.
+
+Definition getNodeCell dom node := nth node dom (DomText String.EmptyString).
+
+Definition domOps: DomOps Dom DomNode := {|
+  getNodeType node := 
+    do dom <- stGet;
+    match getNodeCell dom node with
+    | DomText _ => stRet TextNode
+    | DomElement _ _ => stRet ElementNode
+    end;
+  childrenCount node :=
+    do dom <- stGet;
+    match getNodeCell dom node with
+    | DomText _ => stRet 0
+    | DomElement _ children => stRet (length children)
+    end;
+  getChildNode node index :=
+    do dom <- stGet;
+    match getNodeCell dom node with
+    | DomText _ => stRet 0
+    | DomElement _ children => stRet (nth index children 0)
+    end;
+  createTextNode text :=
+    do dom <- stGet;
+    let len := length dom in
+    do _ <- stPut (dom ++ (DomText text :: nil));
+    stRet len;
+  createElement tag :=
+    do dom <- stGet;
+    let len := length dom in
+    do _ <- stPut (dom ++ (DomElement tag nil :: nil));
+    stRet len;
+  appendChild parent child :=
+    do dom <- stGet;
+    match getNodeCell dom parent with
+    | DomText _ => stRet tt
+    | DomElement tag children => 
+        stPut (replaceNth parent dom (DomElement tag (children ++ child::nil)))
+    end;
+  removeChildAt node index :=
+    do dom <- stGet;
+    match getNodeCell dom node with
+    | DomText _ => stRet tt
+    | DomElement tag children => 
+        stPut (replaceNth node dom (DomElement tag 
+          (firstn index children ++ skipn (S index) children)))
+    end;
+  replaceChildAt node index newChild :=
+    do dom <- stGet;
+    match getNodeCell dom node with
+    | DomText _ => stRet tt
+    | DomElement tag children => 
+        stPut (replaceNth node dom (DomElement tag (replaceNth index children newChild)))
+    end;
+  getTagName node :=
+    do dom <- stGet;
+    match getNodeCell dom node with
+    | DomText _ => stRet String.EmptyString
+    | DomElement tag _ => stRet tag
+    end;
+  getText node :=
+    do dom <- stGet;
+    match getNodeCell dom node with
+    | DomText text => stRet text
+    | DomElement _ _ => stRet String.EmptyString
+    end;
+  setText node newText :=
+    do dom <- stGet;
+    match getNodeCell dom node with
+    | DomText _ => 
+        stPut (replaceNth node dom (DomText newText))
+    | DomElement tag children => stRet tt
+    end;
+  |}.
 
 (* *** *)
 
@@ -246,7 +378,11 @@ Fixpoint dom2vdom (maxDepth: nat) (root: DomNode) {struct maxDepth} : State Dom 
       stRet (VElement tag children)
   end.
 
+Definition ValidDomNode (dom: Dom) (node: DomNode) : Prop := node < length dom.
+
 Theorem updateNode_correct: forall vdom dom parent index,
+  ValidDomNode dom parent ->
+  stEval (domOps.(getNodeType) parent) dom = ElementNode ->
   index < stEval (domOps.(childrenCount) parent) dom ->
   stEval (
     do _ <- updateNode parent vdom index;
@@ -255,71 +391,52 @@ Theorem updateNode_correct: forall vdom dom parent index,
   = vdom.
 Proof.
   induction vdom using VDomNode_fullInd.
-  - simpl. intros.
-    rewrite stBind_assoc.
-    rewrite stEval_stBind.
-    destruct (stRun (getChildNode domOps parent index) dom) as [oldNode dom1] eqn: Heq.
-    simpl.
-    rewrite stEval_stBind.
-    rewrite stRun_stBind.
-    destruct (stRun (getNodeType domOps oldNode) dom1) as [oldType dom2] eqn: Heq1.
-    simpl.
-    destruct oldType.
-    + rewrite stRun_stBind.
-      destruct (stRun (getText domOps oldNode) dom2) as [oldText dom3] eqn: Heq2.
-      simpl.
-      destruct (String.string_dec text oldText) as [Heqtxt | Hneq].
-      * subst. simpl. 
-        rewrite stEval_stBind.
-        replace dom1 with dom in * by admit.
-        replace dom2 with dom in * by admit.
-        replace dom3 with dom in * by admit.
-        rewrite Heq. simpl.
-        rewrite stEval_stBind.
-        simpl. rewrite Heq1. simpl.
-        rewrite stEval_stBind.
-        simpl. rewrite Heq2. reflexivity.
-      * destruct (stRun (setText domOps oldNode text) dom3) as [? dom4] eqn: Heq3.
-        simpl.
-        replace dom1 with dom in * by admit.
-        replace dom2 with dom in * by admit.
-        replace dom3 with dom in * by admit.
-        rewrite stEval_stBind.
-        replace (stRun (getChildNode domOps parent index) dom4) with (oldNode, dom4) by admit.
-          (* should follow from [Heq], but not clear how to validate this *)
-        simpl.
-        rewrite stEval_stBind.
-        replace (stRun (getNodeType domOps oldNode) dom4) with (TextNode, dom4) by admit.
-          (* should follow from [Heq1], but not clear how to validate this *)
-        simpl.
-        rewrite stEval_stBind.
-        replace (stRun (getText domOps oldNode) dom4) with (text, dom4) by admit.
-        reflexivity.
-    +
+  - simpl. intros. unfold stEval, stRun in *.
+    destruct (getNodeCell dom parent) as [oldText | parentTag nodes] eqn: Heq; 
+      try (simpl in *; congruence).
+    unfold stRet in *. simpl in *.
+    destruct (getNodeCell dom (nth index nodes 0)) as [oldText | tag children] eqn: Heq1.
+    + rewrite Heq1. destruct (String.string_dec text oldText) as [Heq2 | Hneq].
+      * subst. rewrite Heq. repeat (rewrite Heq1). reflexivity.
+      * rewrite Heq1. unfold stPut. unfold getNodeCell at 1.
+        rewrite nth_replaceNth_diffInd.
+        2: admit.
+        fold (getNodeCell dom parent).
+        rewrite Heq. unfold getNodeCell at 1.
+        rewrite nth_replaceNth_sameInd.
+        destruct (nth index nodes 0 <? length dom) eqn: Hltb.
+        2: admit.
+        unfold getNodeCell at 1.
+        rewrite nth_replaceNth_sameInd.
+        rewrite Hltb. reflexivity.
+    + unfold getNodeCell at 1. rewrite app_nth1; auto.
+      fold (getNodeCell dom parent).
+      rewrite Heq. unfold stPut. 
+      unfold getNodeCell at 1.
+      rewrite nth_replaceNth_sameInd.
+      rewrite app_length. simpl. rewrite plus_comm. simpl.
+      destruct (parent <? S (length dom)) eqn: Hltb.
+      2: admit.
+      rewrite nth_replaceNth_sameInd.
+      destruct (index <? length nodes) eqn: Hltb1.
+      2: admit.
+      unfold getNodeCell at 1.
+      rewrite replaceNth_app_l; auto.
+      rewrite app_nth2.
+      2: rewrite length_replaceNth; auto with arith.
+      rewrite length_replaceNth. rewrite <- minus_diag_reverse. simpl.
+      unfold getNodeCell at 1.
+      rewrite app_nth2.
+      2: rewrite length_replaceNth; auto with arith.
+      rewrite length_replaceNth. rewrite <- minus_diag_reverse. reflexivity.
+  - simpl. intros. unfold stEval, stRun in *.
+    destruct (getNodeCell dom parent) as [oldText | parentTag nodes] eqn: Heq; 
+      try (simpl in *; congruence).
+    unfold stRet in *. simpl in *.
+    destruct (getNodeCell dom (nth index nodes 0)) as [text | tag oldChildren] eqn: Heq1.
+    + unfold stBind at 1. 
 
 Qed.
-
-(*
-Inductive DomNode (heapSize: nat) : Set  := 
-  | DomText (t: String.string) 
-  | DomElement (name: String.string) (children: list (Fin.t heapSize)).
-
-Record Dom := MkDom {
-  size: nat;
-  nodes: Fin.t size -> DomNode size;
-  root: Fin.t size;
-  }.
-
-Fixpoint dom2vdomHelper {size} (nodes: Fin.t size -> DomNode size)
-  (root: Fin.t) (seen: Fin.t size -> bool) {struct size} : option VDom :=
-  match size with
-  | 0 => None
-  | S size => 
-    if seen root then None
-    else match nodes root with
-      | DomText t => Some (VText t)
-      | DomElement name els =>
-*)
 
 
 End VDom.
