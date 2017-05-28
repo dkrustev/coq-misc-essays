@@ -389,6 +389,12 @@ Fixpoint dom2vdom (maxDepth: nat) (root: DomNode) {struct maxDepth} : State Dom 
 
 Definition ValidDomNode (dom: Dom) (node: DomNode) : Prop := node < length dom.
 
+Definition ValidDom (dom: Dom) : Prop :=
+  exists nodeDepth: DomNode -> nat,
+    forall node: DomNode, exists tag children, 
+      getNodeCell dom node = DomElement tag children -> 
+      forall child, In child children -> nodeDepth child > nodeDepth node.
+
 Lemma createNode_correct: forall vnode,
   exists f, createNode vnode = MkState f
     /\ forall dom, exists dom1, f dom = (length dom, dom ++ dom1)
@@ -519,7 +525,7 @@ Proof.
       * subst. rewrite Heq. repeat (rewrite Heq1). reflexivity.
       * rewrite Heq1. unfold stPut. unfold getNodeCell at 1.
         rewrite nth_replaceNth_diffInd.
-        2: admit.
+        2: admit. (* try to use [ValidDom]/[nodeDepth] to discharge *)
         fold (getNodeCell dom parent).
         rewrite Heq. unfold getNodeCell at 1.
         rewrite nth_replaceNth_sameInd.
