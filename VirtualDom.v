@@ -50,6 +50,16 @@ Proof.
     rewrite IHxs; auto with arith.
 Qed.
 
+Lemma replaceNth_app_r: forall A (xs ys: list A) n y,
+  n >= length xs -> replaceNth n (xs ++ ys) y = xs ++ replaceNth (n - length xs) ys y.
+Proof.
+  induction xs; auto.
+  - simpl. intros. rewrite <- minus_n_O. reflexivity.
+  - simpl. intros. destruct n.
+    + contradict H. unfold ge. auto with arith.
+    + f_equal. rewrite Nat.sub_succ. auto with arith.
+Qed.
+
 (*
 Fixpoint optionMap {A B: Type} (f: A -> option B) (xs: list A) : option (list B) :=
   match xs with
@@ -298,18 +308,17 @@ Fixpoint createNode (node: VDomNode) : State Dom DomNode :=
     stRet el
   end.
 
+Fixpoint removeNodes (parent: DomNode) (from: nat) (count: nat) 
+  {struct count} : State Dom unit :=
+  match count with
+  | 0 => stRet tt
+  | S count => 
+      do _ <- domOps.(removeChildAt) parent (count + from);
+      removeNodes parent from count
+  end.
+
 Fixpoint updateNode (parent: DomNode) (newNode: VDomNode) (index: nat) {struct newNode} 
   : State Dom unit :=
-  let removeNodes := 
-    fix removeNodes (parent: DomNode) (from: nat) (count: nat) 
-      {struct count} : State Dom unit :=
-      match count with
-      | 0 => stRet tt
-      | S count => 
-          do _ <- domOps.(removeChildAt) parent (count + from);
-          removeNodes parent from count
-      end
-    in
   let updateNodes := 
     fix updateNodes (parent: DomNode) (newNodes: list VDomNode) (index: nat)
       {struct newNodes} : State Dom unit :=
@@ -380,6 +389,116 @@ Fixpoint dom2vdom (maxDepth: nat) (root: DomNode) {struct maxDepth} : State Dom 
 
 Definition ValidDomNode (dom: Dom) (node: DomNode) : Prop := node < length dom.
 
+Lemma createNode_correct: forall vnode,
+  exists f, createNode vnode = MkState f
+    /\ forall dom, exists dom1, f dom = (length dom, dom ++ dom1)
+      /\ forall dom2, length dom = length dom2 ->
+          stEval (dom2vdom (vdomDepth vnode) (length dom)) (dom2 ++ dom1) = vnode.
+Proof.
+  intros. exists (stRun (createNode vnode)).
+  induction vnode using VDomNode_fullInd.
+  - simpl. intros. split; auto. intros.
+    exists (DomText text :: nil). split; auto. intros.
+    unfold stEval, stRun. unfold getNodeCell at 1.
+    rewrite app_nth2; try (rewrite H; auto with arith).
+    rewrite <- minus_diag_reverse. simpl.
+    unfold getNodeCell at 1.
+    rewrite app_nth2; auto with arith.
+    rewrite <- minus_diag_reverse. reflexivity.
+  - split; auto. unfold createNode. fold createNode.
+    assert (HcreateNodes: forall dom dom1 tag nodes0 depth, 
+      depth > fold_right max 0 (map vdomDepth children) ->
+      exists nodes, exists dom2,
+      (stRun ((fix createNodes (parent : DomNode) (nodes : list VDomNode) {struct nodes} :
+        State Dom (list DomNode) :=
+        match nodes with
+        | nil => stRet nil
+        | node :: nodes0 =>
+            do n <- createNode node;
+            do _ <- appendChild domOps parent n;
+            do ns <- createNodes parent nodes0; stRet (n :: ns)
+        end) (length dom) children) (dom ++ DomElement tag nodes0 :: dom1) 
+        = (nodes, dom ++ DomElement tag (nodes0 ++ nodes) :: dom1 ++ dom2)
+      /\ forall dom3, length dom = length dom3 -> 
+        Forall2 (fun node child => stEval (dom2vdom depth node) 
+            (dom3 ++ DomElement tag (nodes0 ++ nodes) :: dom1 ++ dom2) = child)
+          nodes children)).
+    { clear name. revert H. induction children.
+      - simpl. intros. exists nil. exists nil. intros. 
+        repeat (rewrite app_nil_r). split; auto.
+      - intros. inversion H. subst.
+        rewrite stRun_stBind. destruct H3 as [Hcn1 Hcn2].
+        specialize (Hcn2 (dom ++ DomElement tag nodes0 :: dom1)).
+        destruct Hcn2 as [dom2 [Hcn2 Hcn3]].
+        rewrite app_length in Hcn2. simpl in Hcn2. rewrite plus_comm in Hcn2. 
+        simpl in Hcn2. rewrite Hcn2. cbn [fst snd].
+        rewrite stRun_stBind. unfold stRun at 1.
+        unfold appendChild at 2.
+        cbn [domOps].
+        unfold stBind at 5. unfold stGet at 1.
+        unfold getNodeCell. rewrite <- app_assoc. cbn [app].
+        rewrite app_nth2; auto with arith.
+        rewrite <- minus_diag_reverse. cbn [nth].
+        unfold stPut at 1.
+        rewrite replaceNth_app_r; auto with arith.
+        rewrite <- minus_diag_reverse. cbn [replaceNth snd app].
+        rewrite stRun_stBind.
+        simpl in H0.
+        specialize (IHchildren H4).
+        assert (Hgt: depth > fold_right Init.Nat.max 0 (map vdomDepth children)).
+        { unfold gt in *. rewrite Nat.max_lub_lt_iff in H0.
+          destruct H0. assumption. }
+        specialize (IHchildren dom (dom1 ++ dom2) tag 
+          (nodes0 ++ S (length dom1 + length dom) :: nil) depth Hgt).
+        destruct IHchildren as [nodes [dom3 [IH1 IH2]]].
+        rewrite IH1. simpl.
+        exists (S (length dom1 + length dom) :: nodes). simpl.
+        exists (dom2 ++ dom3).
+        split.
+        + f_equal. f_equal.
+          repeat (rewrite <- app_assoc). reflexivity.
+        + intros. constructor.
+          * rewrite app_length in Hcn3. simpl in Hcn3.
+            admit.
+          * admit.
+    }
+    intros. 
+    assert (Hgt: vdomDepth (VElement name children) >
+     fold_right Init.Nat.max 0 (map vdomDepth children)); auto with arith.
+    destruct (HcreateNodes dom nil name nil  
+      (vdomDepth (VElement name children)) Hgt) as [nodes [dom1 [Hcns1 Hcns2]]].
+    exists (DomElement name nodes :: dom1).
+    split.
+    { rewrite stRun_stBind. unfold domOps at 1. unfold createElement.
+      repeat (rewrite stRun_stBind).
+      remember (fix createNodes (parent : DomNode) (nodes : list VDomNode) {struct nodes} :
+        State Dom (list DomNode) :=
+        match nodes with
+        | nil => stRet nil
+        | node :: nodes0 =>
+            do n <- createNode node;
+            do _ <- appendChild domOps parent n;
+            do ns <- createNodes parent nodes0; stRet (n :: ns)
+        end)
+        as createNodes.
+      simpl. f_equal. 
+      subst.
+      rewrite Hcns1. reflexivity.
+    }
+    { simpl. intros. unfold stEval, stRun. rewrite H0.
+      unfold getNodeCell at 1. 
+      rewrite app_nth2; auto with arith.
+      rewrite <- minus_diag_reverse. simpl.
+      unfold getNodeCell at 1. 
+      rewrite app_nth2; auto with arith.
+      rewrite <- minus_diag_reverse. simpl.
+      unfold getNodeCell at 1. 
+      rewrite app_nth2; auto with arith.
+      rewrite <- minus_diag_reverse. simpl.
+      admit.
+    }
+Admitted.
+
 Theorem updateNode_correct: forall vdom dom parent index,
   ValidDomNode dom parent ->
   stEval (domOps.(getNodeType) parent) dom = ElementNode ->
@@ -429,12 +548,33 @@ Proof.
       rewrite app_nth2.
       2: rewrite length_replaceNth; auto with arith.
       rewrite length_replaceNth. rewrite <- minus_diag_reverse. reflexivity.
-  - simpl. intros. unfold stEval, stRun in *.
+  - cbn -[createNode updateNode dom2vdom].
+    intros. unfold stEval, stRun in *. 
+    cbn -[createNode dom2vdom].
     destruct (getNodeCell dom parent) as [oldText | parentTag nodes] eqn: Heq; 
       try (simpl in *; congruence).
-    unfold stRet in *. simpl in *.
+    unfold stRet in *. simpl in * |-.
     destruct (getNodeCell dom (nth index nodes 0)) as [text | tag oldChildren] eqn: Heq1.
-    + unfold stBind at 1. 
+    + unfold stBind.
+      destruct (createNode_correct (VElement name children)) as [f [Heqcn Hcn]].
+      rewrite Heqcn. destruct (Hcn dom) as [dom1 [Heqcn1 Heqcn2]].
+      rewrite Heqcn1. unfold getNodeCell at 1.
+      rewrite app_nth1; auto with arith.
+      fold (getNodeCell dom parent). rewrite Heq.
+      unfold stPut. rewrite replaceNth_app_l; auto.
+      unfold getNodeCell at 1. 
+      rewrite app_nth1.
+      2: rewrite length_replaceNth; auto with arith.
+      rewrite nth_replaceNth_sameInd.
+      destruct (parent <? length dom) eqn: Hltb.
+      2: admit.
+      unfold stEval, stRun, vdomDepth in Heqcn2. fold vdomDepth in Heqcn2.
+      rewrite nth_replaceNth_sameInd.
+      destruct (index <? length nodes) eqn: Hltb1.
+      2: admit.
+      rewrite Heqcn2; auto.
+      rewrite length_replaceNth. reflexivity.
+    + admit. 
 
 Qed.
 
